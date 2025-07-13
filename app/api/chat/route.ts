@@ -2,15 +2,24 @@ import { GoogleGenAI } from "@google/genai";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { NextRequest, NextResponse } from "next/server";
 
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+const QDRANT_HOST = process.env.QDRANT_HOST;
+const QDRANT_COLLECTION = process.env.QDRANT_COLLECTION;
+const QDRANT_API_KEY = process.env.QDRANT_API_KEY;
+
 // Ensure environment variables are set
-if (!process.env.GOOGLE_API_KEY) {
+if (!GOOGLE_API_KEY) {
   throw new Error("GOOGLE_API_KEY is not set in environment variables");
 }
-if (!process.env.QDRANT_HOST) {
+if (!QDRANT_HOST) {
   throw new Error("QDRANT_HOST is not set in environment variables");
 }
-if (!process.env.QDRANT_COLLECTION) {
+if (!QDRANT_COLLECTION) {
   throw new Error("QDRANT_COLLECTION is not set in environment variables");
+}
+
+if (!QDRANT_API_KEY) {
+  throw new Error("QDRANT_API_KEY is not set; ensure your Qdrant instance allows unauthenticated access if needed.");
 }
 
 // Initialize Google Gemini and qdrant clients
