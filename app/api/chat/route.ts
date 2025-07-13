@@ -1,28 +1,30 @@
 import { GoogleGenAI } from "@google/genai";
-import { Pinecone } from "@pinecone-database/pinecone";
+import { QdrantClient } from "@qdrant/js-client-rest";
 import { NextRequest, NextResponse } from "next/server";
 
 // Ensure environment variables are set
 if (!process.env.GOOGLE_API_KEY) {
   throw new Error("GOOGLE_API_KEY is not set in environment variables");
 }
-if (!process.env.PINECONE_API_KEY) {
-  throw new Error("PINECONE_API_KEY is not set in environment variables");
+if (!process.env.QDRANT_HOST) {
+  throw new Error("QDRANT_HOST is not set in environment variables");
 }
-if (!process.env.PINECONE_INDEX_NAME) {
-  throw new Error("PINECONE_INDEX_NAME is not set in environment variables");
+if (!process.env.QDRANT_COLLECTION) {
+  throw new Error("QDRANT_COLLECTION is not set in environment variables");
 }
 
-// Initialize Google Gemini and Pinecone clients
-// Note: vertexai is set to false to use the REST API directly
-// This is necessary for environments where the vertexai library is not available.
-// If you are using the vertexai library, set vertexai to true and ensure the library is installed.
+// Initialize Google Gemini and qdrant clients
 const genAI = new GoogleGenAI({
   vertexai: false,
   apiKey: process.env.GOOGLE_API_KEY,
 });
-const pinecone = new Pinecone({
-  apiKey: process.env.PINECONE_API_KEY!,
+
+
+const qdrant = new QdrantClient({
+  url: process.env.QDRANT_HOST,
+  apiKey: process.env.QDRANT_API_KEY,
+  checkCompatibility: false,
+  https: true,
 });
 
 /**
@@ -33,115 +35,86 @@ const pinecone = new Pinecone({
 async function getEmbedding(text: string) {
   const result = await genAI.models.embedContent({
     model: "gemini-embedding-exp-03-07",
-    contents: text,
-    config: {
-      taskType: "SEMANTIC_SIMILARITY",
-    },
+    contents: [{ text }],
+    config: { taskType: "QUESTION_ANSWERING" },
   });
-  return result.embeddings?.values;
+
+  if (result.embeddings?.[0]) return result.embeddings[0].values;
+  throw new Error("No embeddings returned");
 }
 
-/**
- * Searches for similar content in Pinecone using the provided query.
- * @param {string} query - The query to search for.
- * @param {number} topK - The number of top results to return.
- * @returns {Promise<any[]>} - The search results from Pinecone.
- */
-async function searchSimilarContent(query: string, topK: number = 5) {
+async function searchSimilarContent(query: string, topK: number = 20) {
   try {
-    const index = pinecone.Index(process.env.PINECONE_INDEX_NAME as string);
     const queryEmbedding = await getEmbedding(query);
 
-    if (!queryEmbedding || !Array.isArray(queryEmbedding)) {
-      throw new Error("Failed to generate embedding for the query.");
-    }
+    const searchResponse =
+      queryEmbedding &&
+      (await qdrant.search(process.env.QDRANT_COLLECTION!, {
+        vector: queryEmbedding,
+        limit: topK,
+        with_payload: true,
+      }));
 
-    console.log("Query embedding:", queryEmbedding);
-
-    const searchResponse = await index.query({
-      vector: queryEmbedding as number[],
-      topK,
-      includeMetadata: true,
-    });
-
-    return searchResponse.matches || [];
+    return searchResponse;
   } catch (error) {
-    console.error("Error searching Pinecone:", error);
+    console.error("Error searching Qdrant:", error);
     return [];
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const { message } = await request.json();
-
-    if (!message) {
-      return NextResponse.json(
-        { error: "Message is required" },
-        { status: 400 }
-      );
-    }
-
-    // Search for relevant context in Pinecone
+    const { message, history } = await request.json(); // expects history: { role: 'user'|'assistant', content: string }[]
+        if (!message) {
+          return NextResponse.json({ error: "Message is required" }, { status: 400 });
+        }
+    
     const similarContent = await searchSimilarContent(message);
-
-    // Prepare context from search results
-    const context = similarContent
-      .map((match) => match.metadata?.text || "")
-      .filter((text) => text.toString().length > 0)
+    
+    const context = similarContent && similarContent
+      .map((match) => match.payload?.content || "")
+      .filter(Boolean)
       .join("\n\n");
 
-    const systemPrompt = `You are a specialized AI assistant for the "Research Handbook on Destructive Leadership" book. You have access to the complete content of this academic book through a vector database.
+    const systemPrompt = `Do not start your response with any acknowledgment phrases like "Okay", "Sure", "Got it", or "I understand." Always begin with the most relevant information or answer to the user’s question. Do not include any prefatory filler.
 
-Your role is to:
-- Answer questions exclusively based on the book's content
-- Provide chapter summaries and synopses when requested
-- Help users understand concepts from destructive leadership research
-- Reference specific chapters, authors, and sections when relevant
-- Explain academic concepts in an accessible way
-- Provide comprehensive overviews of the book's structure and content
+When the vector database is provided, it may have irrelevant information. Use it only if it is relevant to the question.
 
-When users ask about:
-- Chapter summaries: Provide detailed overviews of specific chapters
-- Book structure: Explain how the book is organized and its main themes
-- Specific concepts: Draw from the book's research and findings
-- Authors and contributors: Reference the various chapter authors and their expertise
-- Research findings: Summarize key studies and conclusions from the book
+If the user asks for a summary, provide a concise summary in bullet points.
+If the user asks for a chapter summary, provide a detailed summary of that chapter.
+If the user asks for the book structure, provide a detailed description of the book's structure including chapters and sections.
+If the user asks for specific concepts or definitions, provide clear and accurate explanations based on the book's content.
 
-Always maintain an academic tone while being helpful and informative.`;
+You are an expert AI assistant trained exclusively on the full content of the *Research Handbook on Destructive Leadership*. You have access to a vector database containing detailed semantic chunks of this academic book, along with structured metadata about chapters and content sections.
 
-    const prompt =
-      context.length > 0
-        ? `${systemPrompt}
+Your responsibilities include:
 
-Based on the following content from the "Research Handbook on Destructive Leadership":
+Content-Specific Responses:
+- Answer questions strictly based on the book’s content.
+- Reference specific chapters, sections, or pages when relevant.
+- Summarize or explain complex academic and theoretical concepts in a clear and accessible tone.
+- Provide concise or detailed summaries of individual chapters or the entire book on request.
 
-${context}
+Structural & Organizational Guidance:
+- Describe the structure of the book (e.g., number of chapters, thematic groupings, flow of content).
+- Explain how chapters relate to key themes in destructive leadership.
+- Identify and describe chapter authors and contributors, where available.`;
 
-User Question: ${message}
+const geminiMessages = [
+      { role: "user", parts: [{ text: systemPrompt }] },
+      ...history.map((msg: { role: string; content: string }) => ({
+        role: msg.role as "user" | "model",
+        parts: [{ text: msg.content }],
+      })),
+      ...(context
+        ? [{ role: "user", parts: [{ text: `Relevant retrieved context:\n${context}` }] }]
+        : []),
+      { role: "user", parts: [{ text: message }] },
+    ];
 
-Please provide a comprehensive answer based on the book's content. If asking for chapter summaries or book structure, be as detailed as possible. Include relevant page references or chapter information when available.`
-        : `${systemPrompt}
-
-User Question: ${message}
-
-I don't have specific content from the book to answer this question. Please rephrase your question or ask about specific chapters, concepts, or topics that would be covered in the Research Handbook on Destructive Leadership.`;
-
-    // const prompt = context
-    //   ? `Based on the following context, please answer the user's question. If the context doesn't contain relevant information, please say so and provide a general response.
-
-    //     Context:
-    //     ${context}
-
-    //     User Question: ${message}
-
-    //     Response:`
-    //   : `Please answer the following question: ${message}`;
-
-    // Generate response with Gemini
     const response = await genAI.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: prompt,
+      model: "gemini-1.5-pro-latest",
+      contents: geminiMessages,
       config: {
         temperature: 0.9,
         topK: 40,
@@ -152,14 +125,15 @@ I don't have specific content from the book to answer this question. Please reph
 
     return NextResponse.json({
       response: text,
-      hasContext: context.length > 0,
-      sources: similarContent.length,
+      hasContext: context && context.length > 0,
+      sources: similarContent && similarContent.map((match) => ({
+        chapter_num: match.payload?.chapter_num,
+        chapter_title: match.payload?.chapter_title,
+        page_num: match.payload?.page_num,
+      })),
     });
   } catch (error) {
     console.error("Error in chat API:", error);
-    return NextResponse.json(
-      { error: "Failed to generate response" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to generate response" }, { status: 500 });
   }
 }

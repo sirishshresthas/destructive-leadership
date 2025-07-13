@@ -32,14 +32,14 @@ export default function ChatInput({
       onSubmit={handleSubmit}
       className="relative"
     >
-      <div className="glass-morphism rounded-2xl p-2 focus-within:ring-2 focus-within:ring-blue-500/50 transition-all duration-300">
+      <div className="glass-morphism rounded-2xl p-2 ring-1 ring-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/50 transition-all duration-300">
         <div className="flex items-center gap-2">
           <input
             type="text"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             placeholder="Ask me anything..."
-            className="flex-1 bg-transparent text-white placeholder-white/60 outline-none px-4 py-3 text-sm"
+            className="flex-1 bg-transparent text-slate-900 placeholder-slate-900/60 outline-none px-4 py-3 text-sm"
             disabled={isLoading}
           />
           <motion.button
